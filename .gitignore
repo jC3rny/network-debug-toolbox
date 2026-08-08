@@ -1,0 +1,25 @@
+# ignore OS specific files
+.DS_Store
+
+# ignore IDE workspace settings
+.vscode
+
+# ignore positional files
+**/.empty
+**/.keep
+
+# ignore TMP folder
+**/tmp/**
+
+# ignore backup files
+**/*.bak
+
+# ignore Ansible files
+**/.venv
+
+# ignore Terraform files
+**/.terraform*
+**/*.tfstate*
+
+# ignore generated SBOM (published as an OCI referrer on the image, not committed)
+**/*.cdx.json
