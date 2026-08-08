@@ -90,6 +90,24 @@ attaches the CycloneDX SBOM to the pushed image as an OCI referrer (needs `oras`
 `brew install oras`). Pin the Wolfi base to a digest before production use (the Dockerfile
 already pins one; refresh it with the command in the Dockerfile header).
 
+## Helm chart
+
+`helm/` deploys the image as a per-node **DaemonSet** you exec into for node-level
+debugging (hardened, non-root by default — see `helm/values.yaml`). CI packages it and
+pushes it as an OCI artifact to GHCR on `main`/`v*`:
+
+```bash
+helm install ndt oci://ghcr.io/jc3rny/charts/network-debug-toolbox \
+  --namespace netdebug --create-namespace
+
+# then exec into the pod on a node and capture
+kubectl -n netdebug exec -it ds/ndt-network-debug-toolbox -- \
+  tcpdump -i any -nn 'tcp port <port>'
+```
+
+`hostNetwork`/`hostPID` require the namespace to allow it under Pod Security:
+`kubectl label ns netdebug pod-security.kubernetes.io/enforce=privileged --overwrite`.
+
 ## `scripts/presnat-capture.sh`
 
 Helper to capture **pre-SNAT** traffic (real client IPs) for a `LoadBalancer`/`NodePort`

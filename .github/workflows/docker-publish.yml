@@ -102,3 +102,30 @@ jobs:
           username: ${{ vars.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
           repository: ${{ vars.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}
+
+  # Package the Helm chart and push it as an OCI artifact to GHCR. Runs only after the
+  # image publishes (so the chart's default image is available), and never on PRs.
+  publish-chart:
+    needs: build
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write   # push OCI chart to ghcr.io
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      - name: Lint chart
+        run: helm lint helm
+
+      - name: Package & push chart to GHCR (OCI)
+        run: |
+          owner=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+          helm package helm --destination dist
+          chart=$(ls dist/*.tgz)
+          helm push "$chart" "oci://ghcr.io/$owner/charts"
+          echo "Pushed $chart -> oci://ghcr.io/$owner/charts/${{ env.IMAGE_NAME }}"
