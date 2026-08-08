@@ -1,0 +1,74 @@
+image:
+  repository: jc3rny/network-debug-toolbox
+  # Defaults to Chart.appVersion when empty. Pin a tag/digest for production.
+  tag: ""
+  pullPolicy: Always
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# The container just idles; you `kubectl exec` into it to run the tools.
+containerName: toolbox
+command: ["sleep", "infinity"]
+args: []
+
+# Extra environment variables, appended to the built-in Downward API set every pod
+# already gets: NODE_NAME, NODE_IP, POD_NAME, POD_NAMESPACE, POD_IP, POD_UID,
+# POD_SERVICE_ACCOUNT, CPU_REQUEST, CPU_LIMIT, MEMORY_REQUEST, MEMORY_LIMIT.
+env: []
+  # - name: FOO
+  #   value: "bar"
+
+# Node-level network visibility (e.g. pre-SNAT client IPs in the host netns).
+hostNetwork: true
+hostPID: true
+
+# A debug pod carries no state — let it terminate fast.
+terminationGracePeriodSeconds: 1
+
+updateStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 1
+
+# Land on every node, including control-plane and otherwise-tainted nodes.
+tolerations:
+  - operator: Exists
+
+nodeSelector: {}
+affinity: {}
+priorityClassName: ""
+podAnnotations: {}
+
+# Hardened by default — this is the image's whole premise: capture as NON-ROOT.
+# tcpdump/ping carry file capabilities; adding NET_ADMIN/NET_RAW puts them in the
+# container's bounding set so they activate for uid 65532. allowPrivilegeEscalation
+# MUST stay true, or no_new_privs blocks file caps from becoming effective.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: true
+  capabilities:
+    drop: ["ALL"]
+    add: ["NET_ADMIN", "NET_RAW"]
+  # For unrestricted node debugging instead, drop the two keys above and set:
+  #   privileged: true
+
+resources:
+  requests:
+    cpu: 10m
+    memory: 32Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi

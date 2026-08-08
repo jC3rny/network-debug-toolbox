@@ -1,0 +1,23 @@
+apiVersion: v2
+name: network-debug-toolbox
+description: Hardened, non-root network debugging toolbox deployed as a per-node DaemonSet you exec into.
+type: application
+
+# Chart version — bump on any chart/template change (SemVer).
+version: 0.1.0
+
+# Version of the app (container image) this chart deploys. Used as the default
+# image tag when image.tag is empty.
+appVersion: "latest"
+
+keywords:
+  - networking
+  - debugging
+  - tcpdump
+  - netshoot
+  - troubleshooting
+home: https://github.com/jC3rny/network-debug-toolbox
+sources:
+  - https://github.com/jC3rny/network-debug-toolbox
+maintainers:
+  - name: jC3rny

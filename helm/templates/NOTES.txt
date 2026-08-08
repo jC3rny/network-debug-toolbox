@@ -1,0 +1,19 @@
+{{ include "network-debug-toolbox.fullname" . }} is rolling out as a DaemonSet in namespace {{ .Release.Namespace }}.
+
+Watch it come up:
+  kubectl -n {{ .Release.Namespace }} rollout status ds/{{ include "network-debug-toolbox.fullname" . }}
+
+Exec into the pod on a specific node:
+  POD=$(kubectl -n {{ .Release.Namespace }} get pod \
+    -l app.kubernetes.io/instance={{ .Release.Name }} \
+    --field-selector spec.nodeName=<node> -o name | head -1)
+  kubectl -n {{ .Release.Namespace }} exec -it "$POD" -- bash
+
+Capture on the node's host netns (non-root, via file capabilities):
+  tcpdump -i any -nn 'tcp port <port>'
+{{- if or .Values.hostNetwork .Values.hostPID }}
+
+NOTE: this release sets hostNetwork/hostPID, which Pod Security "baseline" and
+"restricted" reject. The target namespace must allow it:
+  kubectl label ns {{ .Release.Namespace }} pod-security.kubernetes.io/enforce=privileged --overwrite
+{{- end }}
