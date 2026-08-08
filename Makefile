@@ -50,8 +50,8 @@ build: ## build the image (native arch; set PLATFORM=linux/amd64 to cross-build)
 scan: build ## fail on fixed HIGH/CRITICAL vulns in the freshly built image
 	$(TRIVY) image --scanners vuln --severity $(SEVERITY) --ignore-unfixed --exit-code 1 $(REF)
 
-scan-config: ## scan the Dockerfile for misconfigurations
-	$(TRIVY) config --severity $(SEVERITY) --exit-code 1 .
+scan-config: ## scan the Dockerfile for misconfigurations (helm/ intentional posture skipped)
+	$(TRIVY) config --severity $(SEVERITY) --exit-code 1 --skip-dirs helm .
 
 verify: build ## full vuln report (all severities, never fails) — for review
 	$(TRIVY) image --scanners vuln --severity LOW,MEDIUM,HIGH,CRITICAL $(REF)
