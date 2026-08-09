@@ -1,14 +1,15 @@
 name: release
 
-# Validate, then publish image + Helm chart to BOTH Docker Hub and GHCR.
+# Validate, then publish image + Helm chart to BOTH Docker Hub and GHCR, and sign both
+# with cosign (keyless/OIDC).
 #   push to main  -> :latest (+ branch/sha tags)
 #   push v* tag   -> semver tags
 #   weekly cron   -> rebuild :latest (picks up base-image fixes)
 #
 # Published artifacts:
 #   image  -> docker.io/<DOCKERHUB_USERNAME>/network-debug-toolbox
-#             ghcr.io/<owner>/network-debug-toolbox
-#   chart  -> ghcr.io/<owner>/helm-charts/network-debug-toolbox
+#             ghcr.io/<owner>/library/network-debug-toolbox
+#   chart  -> ghcr.io/<owner>/helm/network-debug-toolbox
 #             docker.io/<DOCKERHUB_USERNAME>/network-debug-toolbox-helm
 
 on:
@@ -18,6 +19,15 @@ on:
   schedule:
     - cron: '0 6 * * 1'   # Mondays 06:00 UTC — periodic rebuild
   workflow_dispatch:
+
+# Least privilege by default; jobs elevate what they need.
+permissions:
+  contents: read
+
+# Don't let overlapping publishes race; queue them per ref (never cancel a push mid-flight).
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   IMAGE_NAME: network-debug-toolbox
@@ -34,23 +44,30 @@ jobs:
     permissions:
       contents: read
       packages: write   # push image to ghcr.io
+      id-token: write   # cosign keyless signing
     steps:
       - uses: actions/checkout@v7
 
       - uses: docker/setup-qemu-action@v4
       - uses: docker/setup-buildx-action@v4
+      - uses: sigstore/cosign-installer@v3
 
       - name: Lowercase repository owner (ghcr paths must be lowercase)
         id: owner
         run: echo "ghcr=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
 
-      - name: Docker metadata
-        id: meta
+      # ---------- Docker Hub ----------
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Docker Hub metadata
+        id: meta-dockerhub
         uses: docker/metadata-action@v6
         with:
-          images: |
-            docker.io/${{ vars.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}
-            ghcr.io/${{ steps.owner.outputs.ghcr }}/${{ env.IMAGE_NAME }}
+          images: docker.io/${{ vars.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}
           tags: |
             type=ref,event=branch
             type=semver,pattern={{version}}
@@ -58,31 +75,24 @@ jobs:
             type=sha,format=short
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v4
-        with:
-          username: ${{ vars.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build & push (linux/amd64, linux/arm64) to Docker Hub + GHCR
+      - name: Build & push image to Docker Hub (linux/amd64, linux/arm64)
+        id: build
         uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ steps.meta-dockerhub.outputs.tags }}
+          labels: ${{ steps.meta-dockerhub.outputs.labels }}
           sbom: true
           provenance: mode=max
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Sign Docker Hub image (cosign keyless)
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: cosign sign --yes "docker.io/${{ vars.DOCKERHUB_USERNAME }}/${IMAGE_NAME}@${DIGEST}"
 
       - name: Sync README to Docker Hub overview
         if: github.ref == 'refs/heads/main'
@@ -92,12 +102,48 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
           repository: ${{ vars.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}
 
+      # ---------- GHCR ----------
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: GHCR metadata
+        id: meta-ghcr
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ steps.owner.outputs.ghcr }}/library/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Copy image to GHCR (no rebuild — same digest)
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          TAGS: ${{ steps.meta-ghcr.outputs.tags }}
+        run: |
+          set -euo pipefail
+          src="docker.io/${{ vars.DOCKERHUB_USERNAME }}/${IMAGE_NAME}@${DIGEST}"
+          args=$(printf '%s\n' "$TAGS" | sed 's/^/--tag /')
+          docker buildx imagetools create $args "$src"
+
+      - name: Sign GHCR image (cosign keyless)
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: cosign sign --yes "ghcr.io/${{ steps.owner.outputs.ghcr }}/library/${IMAGE_NAME}@${DIGEST}"
+
   publish-chart:
     needs: [validate, publish-image]
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write   # push OCI chart to ghcr.io
+      id-token: write   # cosign keyless signing
     steps:
       - uses: actions/checkout@v7
 
@@ -107,7 +153,9 @@ jobs:
       - name: Set up ORAS
         uses: oras-project/setup-oras@v2
 
-      - name: Package & push chart (GHCR + Docker Hub)
+      - uses: sigstore/cosign-installer@v3
+
+      - name: Package, push & sign chart (GHCR + Docker Hub)
         env:
           DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -119,20 +167,28 @@ jobs:
           ver=$(grep -E '^version:' "$CHART_DIR/Chart.yaml" | awk '{print $2}')
           echo "chart version: $ver"
 
-          # Registry logins (helm push to GHCR; oras copy GHCR -> Docker Hub).
+          # Registry logins: helm push (GHCR), oras copy (GHCR -> Docker Hub), cosign (both).
           echo "$GHCR_TOKEN"      | helm registry login ghcr.io              -u "$ACTOR"              --password-stdin
-          echo "$GHCR_TOKEN"      | oras login          ghcr.io              -u "$ACTOR"              --password-stdin
-          echo "$DOCKERHUB_TOKEN" | oras login          registry-1.docker.io -u "$DOCKERHUB_USERNAME" --password-stdin
+          echo "$GHCR_TOKEN"      | oras   login        ghcr.io              -u "$ACTOR"              --password-stdin
+          echo "$DOCKERHUB_TOKEN" | oras   login        registry-1.docker.io -u "$DOCKERHUB_USERNAME" --password-stdin
+          echo "$GHCR_TOKEN"      | cosign login        ghcr.io              -u "$ACTOR"              --password-stdin
+          echo "$DOCKERHUB_TOKEN" | cosign login        registry-1.docker.io -u "$DOCKERHUB_USERNAME" --password-stdin
 
-          # Package once; push canonical chart to GHCR (leaf = chart name).
+          # Package once; push canonical chart to GHCR (leaf = chart name), capture its digest.
           helm package "$CHART_DIR" --destination dist
           chart=$(ls dist/*.tgz)
-          helm push "$chart" "oci://ghcr.io/$owner/helm-charts"
+          helm push "$chart" "oci://ghcr.io/$owner/helm" 2>&1 | tee push.log
+          digest=$(grep -oE 'sha256:[0-9a-f]{64}' push.log | head -1)
+          [ -n "$digest" ] || { echo "could not resolve pushed chart digest"; exit 1; }
 
           # Mirror the identical artifact to a separate Docker Hub repo (-helm suffix).
-          # oras cp preserves the Helm OCI media types; no repackaging/renaming needed.
-          oras cp "ghcr.io/$owner/helm-charts/${IMAGE_NAME}:${ver}" \
+          # oras cp preserves the Helm OCI media types + digest; no repackaging/renaming.
+          oras cp "ghcr.io/$owner/helm/${IMAGE_NAME}:${ver}" \
                   "registry-1.docker.io/${DOCKERHUB_USERNAME}/${IMAGE_NAME}-helm:${ver}"
 
-          echo "chart -> oci://ghcr.io/$owner/helm-charts/${IMAGE_NAME}:${ver}"
+          # Sign both by the (shared) digest.
+          cosign sign --yes "ghcr.io/$owner/helm/${IMAGE_NAME}@${digest}"
+          cosign sign --yes "registry-1.docker.io/${DOCKERHUB_USERNAME}/${IMAGE_NAME}-helm@${digest}"
+
+          echo "chart -> oci://ghcr.io/$owner/helm/${IMAGE_NAME}:${ver} ($digest)"
           echo "chart -> oci://registry-1.docker.io/${DOCKERHUB_USERNAME}/${IMAGE_NAME}-helm:${ver}"
