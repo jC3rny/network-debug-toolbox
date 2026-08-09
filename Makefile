@@ -7,6 +7,7 @@
 #   make verify      # full report, all severities, never fails (for review)
 #   make verify-caps # assert tcpdump file caps (so non-root capture works)
 #   make sbom
+#   make chart       # lint + render (incl. reserved 'global') + kubeconform the Helm chart
 #   make push IMAGE=<registry>/<user>/network-debug-toolbox TAG=YYYYMMDD
 
 IMAGE    ?= network-debug-toolbox
@@ -33,11 +34,17 @@ TRIVY ?= docker run --rm \
 # Install: brew install oras.
 ORAS ?= oras
 
-.PHONY: all publish build scan scan-config verify verify-caps sbom attach-sbom push clean help
+CHART_DIR ?= helm
+HELM      ?= helm
+# kubeconform via Docker — validates rendered manifests against the Kubernetes schemas.
+KUBECONFORM ?= docker run --rm -i ghcr.io/yannh/kubeconform:latest
+
+.PHONY: all publish build scan scan-config verify verify-caps sbom attach-sbom push clean help \
+        chart chart-lint chart-render chart-validate
 
 # `all` runs the full local pipeline. `push` is intentionally excluded — pushing is
 # a deliberate, outward action you run explicitly, not on every build.
-all: build scan-config scan verify-caps sbom ## build, scan (config + image), verify caps, SBOM
+all: build scan-config scan verify-caps sbom chart ## build, scan (config + image), verify caps, SBOM, chart
 
 # Publish: force amd64 for the whole pipeline (match typical Linux nodes), then push.
 # The target-specific PLATFORM propagates to the `all` and `push` prerequisites.
@@ -75,6 +82,19 @@ attach-sbom: ## attach the SBOM to the pushed image as an OCI referrer (needs or
 	$(ORAS) attach "$$ref" \
 	  --artifact-type application/vnd.cyclonedx+json \
 	  $(SBOM):application/vnd.cyclonedx+json
+
+chart: chart-lint chart-render chart-validate ## lint + render + kubeconform the Helm chart
+
+chart-lint: ## helm lint (also runs values.schema.json against default values)
+	$(HELM) lint $(CHART_DIR)
+
+chart-render: ## render defaults AND a reserved-key set, so values.schema.json can't over-restrict
+	$(HELM) template test $(CHART_DIR) >/dev/null
+	$(HELM) template test $(CHART_DIR) --set global.smoke=true >/dev/null
+	@echo "OK: chart renders (schema accepts defaults + reserved 'global')"
+
+chart-validate: ## validate rendered manifests against Kubernetes schemas (kubeconform)
+	$(HELM) template test $(CHART_DIR) | $(KUBECONFORM) -strict -summary
 
 push: ## push the image (set IMAGE=<registry>/<user>/network-debug-toolbox)
 	docker push $(REF)

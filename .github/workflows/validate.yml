@@ -59,11 +59,5 @@ jobs:
       - name: Set up Helm
         uses: azure/setup-helm@v5
 
-      - name: Lint chart
-        run: helm lint helm
-
-      - name: Render + validate manifests (kubeconform)
-        run: |
-          helm template test helm --namespace netdebug > rendered.yaml
-          docker run --rm -i ghcr.io/yannh/kubeconform:latest \
-            -strict -summary < rendered.yaml
+      - name: Validate Helm chart (lint + render + kubeconform)
+        run: make chart
