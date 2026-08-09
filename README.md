@@ -84,7 +84,7 @@ Published artifacts:
 | Artifact | Docker Hub | GHCR |
 |---|---|---|
 | Image | `jc3rny/network-debug-toolbox` | `ghcr.io/jc3rny/network-debug-toolbox` |
-| Chart | `jc3rny/network-debug-toolbox-helm` | `ghcr.io/jc3rny/charts/network-debug-toolbox` |
+| Chart | `jc3rny/network-debug-toolbox-helm` | `ghcr.io/jc3rny/helm-charts/network-debug-toolbox` |
 
 GHCR auth uses the built-in `GITHUB_TOKEN` (no setup). Docker Hub needs these under
 **Settings → Secrets and variables → Actions**:
@@ -114,7 +114,7 @@ pushes it as an OCI artifact to both registries on `main`/`v*` (use either):
 
 ```bash
 # GHCR
-helm install ndt oci://ghcr.io/jc3rny/charts/network-debug-toolbox \
+helm install ndt oci://ghcr.io/jc3rny/helm-charts/network-debug-toolbox \
   --namespace netdebug --create-namespace
 # Docker Hub
 helm install ndt oci://registry-1.docker.io/jc3rny/network-debug-toolbox-helm \

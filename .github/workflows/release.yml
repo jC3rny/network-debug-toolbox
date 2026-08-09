@@ -8,7 +8,7 @@ name: release
 # Published artifacts:
 #   image  -> docker.io/<DOCKERHUB_USERNAME>/network-debug-toolbox
 #             ghcr.io/<owner>/network-debug-toolbox
-#   chart  -> ghcr.io/<owner>/charts/network-debug-toolbox
+#   chart  -> ghcr.io/<owner>/helm-charts/network-debug-toolbox
 #             docker.io/<DOCKERHUB_USERNAME>/network-debug-toolbox-helm
 
 on:
@@ -127,12 +127,12 @@ jobs:
           # Package once; push canonical chart to GHCR (leaf = chart name).
           helm package "$CHART_DIR" --destination dist
           chart=$(ls dist/*.tgz)
-          helm push "$chart" "oci://ghcr.io/$owner/charts"
+          helm push "$chart" "oci://ghcr.io/$owner/helm-charts"
 
           # Mirror the identical artifact to a separate Docker Hub repo (-helm suffix).
           # oras cp preserves the Helm OCI media types; no repackaging/renaming needed.
-          oras cp "ghcr.io/$owner/charts/${IMAGE_NAME}:${ver}" \
+          oras cp "ghcr.io/$owner/helm-charts/${IMAGE_NAME}:${ver}" \
                   "registry-1.docker.io/${DOCKERHUB_USERNAME}/${IMAGE_NAME}-helm:${ver}"
 
-          echo "chart -> oci://ghcr.io/$owner/charts/${IMAGE_NAME}:${ver}"
+          echo "chart -> oci://ghcr.io/$owner/helm-charts/${IMAGE_NAME}:${ver}"
           echo "chart -> oci://registry-1.docker.io/${DOCKERHUB_USERNAME}/${IMAGE_NAME}-helm:${ver}"
