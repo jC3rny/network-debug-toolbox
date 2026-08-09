@@ -93,7 +93,8 @@ GHCR auth uses the built-in `GITHUB_TOKEN` (no setup). Docker Hub needs these un
 |---|---|---|
 | `DOCKERHUB_USERNAME` | **Variable** | Docker Hub account the image is pushed under (not sensitive — kept a variable so it stays readable in logs) |
 | `DOCKERHUB_TOKEN` | **Secret** | Docker Hub access token, **Read & Write, all repositories** |
-| `RELEASE_PLEASE_TOKEN` | **Secret** | PAT for release automation — Contents RW + Pull requests RW |
+
+No PAT is needed — everything runs on the built-in `GITHUB_TOKEN`.
 
 Images and charts are signed with **cosign** (keyless/OIDC); verify with
 `cosign verify <ref> --certificate-identity-regexp '.*' --certificate-oidc-issuer https://token.actions.githubusercontent.com`.
@@ -101,16 +102,16 @@ Images and charts are signed with **cosign** (keyless/OIDC); verify with
 ### Versioned releases (release-please)
 
 Uses **Conventional Commits** (`feat:` → minor, `fix:` → patch). `release-please` keeps a
-release PR that bumps the version + `CHANGELOG.md` + the chart's `version`/`appVersion`;
-it's auto-merged once CI passes, and the resulting `vX.Y.Z` tag triggers the publish above.
-Dependabot base-image bumps land as `fix(...)` so they roll into a patch release
-automatically (action bumps use `ci(...)` — changelog only, no release). Note `:latest`
-already tracks `main`, so patches reach it even before a versioned release is cut.
+release PR that bumps the version + `CHANGELOG.md` + the chart's `version`/`appVersion`.
+**You merge that PR when you want to cut a release**; on merge, the versioned, signed image
+and chart are published automatically (release-please calls `release.yml` in the same run).
+Dependabot base-image bumps land as `fix(...)` so they queue into the next patch release
+(action bumps use `ci(...)` — changelog only). `:latest` already tracks `main`, so base-image
+patches reach users immediately, independent of cutting a versioned release.
 
-For full automation to work you must enable **Settings → General → Allow auto-merge** and a
-**required status check** on `main` (use `validate / build-scan`; don't require approvals,
-or the bot PRs can't self-merge). `RELEASE_PLEASE_TOKEN` must be a PAT (not `GITHUB_TOKEN`),
-or the release PR won't trigger CI and the tag won't trigger publishing.
+> The release PR is created by `GITHUB_TOKEN`, so CI does **not** auto-run on it. Merge it
+> with the admin **"merge without waiting for requirements"** option, or close/reopen it
+> once to trigger CI. (Dependabot PRs are unaffected — they run CI and auto-merge normally.)
 
 To publish manually instead:
 

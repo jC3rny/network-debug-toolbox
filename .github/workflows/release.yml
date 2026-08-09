@@ -1,10 +1,11 @@
 name: release
 
-# Validate, then publish image + Helm chart to BOTH Docker Hub and GHCR, and sign both
-# with cosign (keyless/OIDC).
-#   push to main  -> :latest (+ branch/sha tags)
-#   push v* tag   -> semver tags
-#   weekly cron   -> rebuild :latest (picks up base-image fixes)
+# Publish the image (+ chart on releases) to Docker Hub and GHCR, signed with cosign.
+#   push to main / weekly / dispatch -> image :latest (patch delivery; no chart)
+#   workflow_call with a version      -> image :<version> + :latest AND the chart (release)
+#
+# The versioned path is driven by release-please.yml (it calls this workflow with the new
+# version when a release PR is merged), so no PAT/tag-trigger is needed.
 #
 # Published artifacts:
 #   image  -> docker.io/<DOCKERHUB_USERNAME>/network-debug-toolbox
@@ -15,18 +16,21 @@ name: release
 on:
   push:
     branches: [main]
-    tags: ['v*']
   schedule:
     - cron: '0 6 * * 1'   # Mondays 06:00 UTC — periodic rebuild
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      version:
+        description: Semver to publish (empty = :latest only, no chart)
+        type: string
+        default: ''
 
-# Least privilege by default; jobs elevate what they need.
 permissions:
   contents: read
 
-# Don't let overlapping publishes race; queue them per ref (never cancel a push mid-flight).
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ github.ref }}-${{ inputs.version }}
   cancel-in-progress: false
 
 env:
@@ -34,7 +38,6 @@ env:
   CHART_DIR: helm
 
 jobs:
-  # Run the exact same gate as PRs before anything is published.
   validate:
     uses: ./.github/workflows/validate.yml
 
@@ -69,11 +72,9 @@ jobs:
         with:
           images: docker.io/${{ vars.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=ref,event=branch
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha,format=short
             type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=${{ inputs.version }},enable=${{ inputs.version != '' }}
+            type=sha,format=short
 
       - name: Build & push image to Docker Hub (linux/amd64, linux/arm64)
         id: build
@@ -116,11 +117,9 @@ jobs:
         with:
           images: ghcr.io/${{ steps.owner.outputs.ghcr }}/library/${{ env.IMAGE_NAME }}
           tags: |
-            type=ref,event=branch
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha,format=short
             type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=${{ inputs.version }},enable=${{ inputs.version != '' }}
+            type=sha,format=short
 
       - name: Copy image to GHCR (no rebuild — same digest)
         env:
@@ -137,8 +136,10 @@ jobs:
           DIGEST: ${{ steps.build.outputs.digest }}
         run: cosign sign --yes "ghcr.io/${{ steps.owner.outputs.ghcr }}/library/${IMAGE_NAME}@${DIGEST}"
 
+  # Chart is published only on a release (workflow_call with a version).
   publish-chart:
     needs: [validate, publish-image]
+    if: ${{ inputs.version != '' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -182,7 +183,6 @@ jobs:
           [ -n "$digest" ] || { echo "could not resolve pushed chart digest"; exit 1; }
 
           # Mirror the identical artifact to a separate Docker Hub repo (-helm suffix).
-          # oras cp preserves the Helm OCI media types + digest; no repackaging/renaming.
           oras cp "ghcr.io/$owner/helm/${IMAGE_NAME}:${ver}" \
                   "registry-1.docker.io/${DOCKERHUB_USERNAME}/${IMAGE_NAME}-helm:${ver}"
 
