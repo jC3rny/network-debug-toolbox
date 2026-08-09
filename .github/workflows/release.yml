@@ -19,6 +19,11 @@ on:
   schedule:
     - cron: '0 6 * * 1'   # Mondays 06:00 UTC — periodic rebuild
   workflow_dispatch:
+    inputs:
+      version:
+        description: Semver to publish (empty = :latest only, no chart)
+        type: string
+        default: ''
   workflow_call:
     inputs:
       version:
