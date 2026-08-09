@@ -1,9 +1,16 @@
 name: docker-publish
 
 # Build the hardened image, run the same gate as `make` (Trivy config + image scan,
-# file-caps check), then push multi-arch to Docker Hub on `main` and on `v*` tags.
-# Pull requests build + scan only (no push). A weekly rebuild keeps CVEs low as the
-# Wolfi base is refreshed upstream.
+# file-caps check), then push multi-arch to BOTH Docker Hub and GHCR on `main`/`v*`.
+# The Helm chart is packaged and published to both registries too. Pull requests
+# build + scan only (no push). A weekly rebuild keeps CVEs low as the Wolfi base is
+# refreshed upstream.
+#
+# Published artifacts:
+#   image  -> docker.io/<DOCKERHUB_USERNAME>/network-debug-toolbox
+#             ghcr.io/<owner>/network-debug-toolbox
+#   chart  -> ghcr.io/<owner>/charts/network-debug-toolbox
+#             docker.io/<DOCKERHUB_USERNAME>/network-debug-toolbox-helm
 
 on:
   push:
@@ -16,12 +23,14 @@ on:
 
 env:
   IMAGE_NAME: network-debug-toolbox
+  CHART_DIR: helm
 
 jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      packages: write   # push image to ghcr.io
     steps:
       - uses: actions/checkout@v4
 
@@ -61,13 +70,19 @@ jobs:
           echo "$out" | grep -q cap_net_raw || { echo "FAIL: tcpdump missing file caps"; exit 1; }
           echo "OK: tcpdump file caps present"
 
-      # 2) Push multi-arch — only outside pull requests (secrets aren't available to fork PRs).
+      - name: Lowercase repository owner (ghcr paths must be lowercase)
+        id: owner
+        run: echo "ghcr=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+
+      # 2) Push multi-arch to both registries — only outside PRs (fork PRs have no secrets).
       - name: Docker metadata
         id: meta
         if: github.event_name != 'pull_request'
         uses: docker/metadata-action@v5
         with:
-          images: docker.io/${{ vars.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}
+          images: |
+            docker.io/${{ vars.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}
+            ghcr.io/${{ steps.owner.outputs.ghcr }}/${{ env.IMAGE_NAME }}
           tags: |
             type=ref,event=branch
             type=semver,pattern={{version}}
@@ -75,14 +90,22 @@ jobs:
             type=sha,format=short
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Login to Docker Hub
+      - name: Log in to Docker Hub
         if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
           username: ${{ vars.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build & push (linux/amd64, linux/arm64)
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push (linux/amd64, linux/arm64) to Docker Hub + GHCR
         if: github.event_name != 'pull_request'
         uses: docker/build-push-action@v6
         with:
@@ -105,8 +128,9 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
           repository: ${{ vars.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}
 
-  # Package the Helm chart and push it as an OCI artifact to GHCR. Runs only after the
-  # image publishes (so the chart's default image is available), and never on PRs.
+  # Package the Helm chart, push it to GHCR (nested charts/ path), then mirror the exact
+  # same artifact to a separate Docker Hub repo (<name>-helm). Runs after the image
+  # publishes, never on PRs.
   publish-chart:
     needs: build
     if: github.event_name != 'pull_request'
@@ -120,14 +144,38 @@ jobs:
       - name: Set up Helm
         uses: azure/setup-helm@v4
 
-      - name: Lint chart
-        run: helm lint helm
+      - name: Set up ORAS
+        uses: oras-project/setup-oras@v1
 
-      - name: Package & push chart to GHCR (OCI)
+      - name: Lint chart
+        run: helm lint "$CHART_DIR"
+
+      - name: Package & push chart (GHCR + Docker Hub)
+        env:
+          DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
         run: |
-          owner=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
-          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
-          helm package helm --destination dist
+          set -euo pipefail
+          owner=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')
+          ver=$(grep -E '^version:' "$CHART_DIR/Chart.yaml" | awk '{print $2}')
+          echo "chart version: $ver"
+
+          # Registry logins (helm push to GHCR; oras copy GHCR -> Docker Hub).
+          echo "$GHCR_TOKEN"      | helm registry login ghcr.io           -u "$ACTOR"              --password-stdin
+          echo "$GHCR_TOKEN"      | oras login          ghcr.io           -u "$ACTOR"              --password-stdin
+          echo "$DOCKERHUB_TOKEN" | oras login          registry-1.docker.io -u "$DOCKERHUB_USERNAME" --password-stdin
+
+          # Package once; push canonical chart to GHCR (leaf = chart name).
+          helm package "$CHART_DIR" --destination dist
           chart=$(ls dist/*.tgz)
           helm push "$chart" "oci://ghcr.io/$owner/charts"
-          echo "Pushed $chart -> oci://ghcr.io/$owner/charts/${{ env.IMAGE_NAME }}"
+
+          # Mirror the identical artifact to a separate Docker Hub repo (-helm suffix).
+          # oras cp preserves the Helm OCI media types; no repackaging/renaming needed.
+          oras cp "ghcr.io/$owner/charts/${IMAGE_NAME}:${ver}" \
+                  "registry-1.docker.io/${DOCKERHUB_USERNAME}/${IMAGE_NAME}-helm:${ver}"
+
+          echo "chart -> oci://ghcr.io/$owner/charts/${IMAGE_NAME}:${ver}"
+          echo "chart -> oci://registry-1.docker.io/${DOCKERHUB_USERNAME}/${IMAGE_NAME}-helm:${ver}"

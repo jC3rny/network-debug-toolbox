@@ -11,7 +11,7 @@ capabilities.
 ## Why
 
 - **Secure base:** Chainguard **Wolfi** (`cgr.dev/chainguard/wolfi-base`) — minimal, glibc,
-  rebuilt frequently, typically low/zero CVE. Not Alpine, not the netshoot kitchen sink.
+  rebuilt frequently, typically low/zero CVE.
 - **Curated toolset:** only what network/system debugging needs (fewer packages = smaller
   attack surface): `tcpdump bind-tools iproute2 iputils netcat-openbsd socat conntrack-tools
   iptables nftables ethtool mtr iperf3 lsof strace curl openssl jq bash`. No `kubectl`
@@ -27,7 +27,9 @@ capabilities.
 ## Use with `kubectl debug`
 
 ```bash
-IMG=<registry>/<user>/network-debug-toolbox:latest
+# published to both registries — pick either:
+IMG=jc3rny/network-debug-toolbox:latest              # Docker Hub
+IMG=ghcr.io/jc3rny/network-debug-toolbox:latest      # GHCR (no pull rate limits)
 
 # inside a pod (packet capture needs the netadmin profile)
 kubectl debug -it <pod> -n <ns> --image=$IMG --target=<container> --profile=netadmin -- bash
@@ -69,9 +71,16 @@ Apple Silicon) for speed.
 ## Publish
 
 CI (GitHub Actions, `.github/workflows/docker-publish.yml`) builds multi-arch
-(`linux/amd64,linux/arm64`), runs the Trivy + file-caps gate, and pushes to Docker Hub on
-pushes to `main` and on `v*` tags. Configure these under **Settings → Secrets and
-variables → Actions**:
+(`linux/amd64,linux/arm64`), runs the Trivy + file-caps gate, and pushes to **both Docker
+Hub and GHCR** on pushes to `main` and on `v*` tags:
+
+| Artifact | Docker Hub | GHCR |
+|---|---|---|
+| Image | `jc3rny/network-debug-toolbox` | `ghcr.io/jc3rny/network-debug-toolbox` |
+| Chart | `jc3rny/network-debug-toolbox-helm` | `ghcr.io/jc3rny/charts/network-debug-toolbox` |
+
+GHCR auth uses the built-in `GITHUB_TOKEN` (no setup). Docker Hub needs these under
+**Settings → Secrets and variables → Actions**:
 
 | Name | Kind | Purpose |
 |---|---|---|
@@ -94,10 +103,14 @@ already pins one; refresh it with the command in the Dockerfile header).
 
 `helm/` deploys the image as a per-node **DaemonSet** you exec into for node-level
 debugging (hardened, non-root by default — see `helm/values.yaml`). CI packages it and
-pushes it as an OCI artifact to GHCR on `main`/`v*`:
+pushes it as an OCI artifact to both registries on `main`/`v*` (use either):
 
 ```bash
+# GHCR
 helm install ndt oci://ghcr.io/jc3rny/charts/network-debug-toolbox \
+  --namespace netdebug --create-namespace
+# Docker Hub
+helm install ndt oci://registry-1.docker.io/jc3rny/network-debug-toolbox-helm \
   --namespace netdebug --create-namespace
 
 # then exec into the pod on a node and capture
