@@ -168,10 +168,10 @@ jobs:
           ver=$(grep -E '^version:' "$CHART_DIR/Chart.yaml" | awk '{print $2}')
           echo "chart version: $ver"
 
-          # Registry logins: helm push (GHCR), oras copy (GHCR -> Docker Hub), cosign (both).
+          # Logins for helm push (GHCR) and cosign signatures (both). oras cp gets its
+          # credentials inline (below) — it does not reliably use logged-in creds for a
+          # cross-registry copy, which is what caused the Docker Hub 401.
           echo "$GHCR_TOKEN"      | helm registry login ghcr.io              -u "$ACTOR"              --password-stdin
-          echo "$GHCR_TOKEN"      | oras   login        ghcr.io              -u "$ACTOR"              --password-stdin
-          echo "$DOCKERHUB_TOKEN" | oras   login        registry-1.docker.io -u "$DOCKERHUB_USERNAME" --password-stdin
           echo "$GHCR_TOKEN"      | cosign login        ghcr.io              -u "$ACTOR"              --password-stdin
           echo "$DOCKERHUB_TOKEN" | cosign login        registry-1.docker.io -u "$DOCKERHUB_USERNAME" --password-stdin
 
@@ -182,9 +182,13 @@ jobs:
           digest=$(grep -oE 'sha256:[0-9a-f]{64}' push.log | head -1)
           [ -n "$digest" ] || { echo "could not resolve pushed chart digest"; exit 1; }
 
-          # Mirror the identical artifact to a separate Docker Hub repo (-helm suffix).
-          oras cp "ghcr.io/$owner/helm/${IMAGE_NAME}:${ver}" \
-                  "registry-1.docker.io/${DOCKERHUB_USERNAME}/${IMAGE_NAME}-helm:${ver}"
+          # Mirror the identical artifact to a separate Docker Hub repo (-helm suffix),
+          # passing per-endpoint credentials explicitly (robust cross-registry copy).
+          oras cp \
+            --from-username "$ACTOR"              --from-password "$GHCR_TOKEN" \
+            --to-username   "$DOCKERHUB_USERNAME" --to-password   "$DOCKERHUB_TOKEN" \
+            "ghcr.io/$owner/helm/${IMAGE_NAME}:${ver}" \
+            "registry-1.docker.io/${DOCKERHUB_USERNAME}/${IMAGE_NAME}-helm:${ver}"
 
           # Sign both by the (shared) digest.
           cosign sign --yes "ghcr.io/$owner/helm/${IMAGE_NAME}@${digest}"
