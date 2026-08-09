@@ -70,9 +70,16 @@ Apple Silicon) for speed.
 
 ## Publish
 
-CI (GitHub Actions, `.github/workflows/docker-publish.yml`) builds multi-arch
-(`linux/amd64,linux/arm64`), runs the Trivy + file-caps gate, and pushes to **both Docker
-Hub and GHCR** on pushes to `main` and on `v*` tags:
+CI is split into a validation gate and a publish stage (`.github/workflows/`):
+
+- **`ci.yml`** — on pull requests: runs the reusable `validate.yml` gate (build + Trivy
+  config/image scan + file-caps guard + `helm lint`). No secrets, no push. Make
+  `validate / build-scan` the required status check on `main`.
+- **`release.yml`** — on push to `main` (→ `latest`), `v*` tags (→ semver), and a weekly
+  rebuild: runs the same gate, then pushes multi-arch (`linux/amd64,linux/arm64`) image +
+  chart to **both Docker Hub and GHCR**.
+
+Published artifacts:
 
 | Artifact | Docker Hub | GHCR |
 |---|---|---|

@@ -1,0 +1,12 @@
+name: ci
+
+# Validation for pull requests — build, scan, file-caps guard, helm lint. No push.
+# Make this the required status check for `main` (name: "validate / build-scan").
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  validate:
+    uses: ./.github/workflows/validate.yml

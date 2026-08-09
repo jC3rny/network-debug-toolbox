@@ -1,10 +1,9 @@
-name: docker-publish
+name: release
 
-# Build the hardened image, run the same gate as `make` (Trivy config + image scan,
-# file-caps check), then push multi-arch to BOTH Docker Hub and GHCR on `main`/`v*`.
-# The Helm chart is packaged and published to both registries too. Pull requests
-# build + scan only (no push). A weekly rebuild keeps CVEs low as the Wolfi base is
-# refreshed upstream.
+# Validate, then publish image + Helm chart to BOTH Docker Hub and GHCR.
+#   push to main  -> :latest (+ branch/sha tags)
+#   push v* tag   -> semver tags
+#   weekly cron   -> rebuild :latest (picks up base-image fixes)
 #
 # Published artifacts:
 #   image  -> docker.io/<DOCKERHUB_USERNAME>/network-debug-toolbox
@@ -16,7 +15,6 @@ on:
   push:
     branches: [main]
     tags: ['v*']
-  pull_request:
   schedule:
     - cron: '0 6 * * 1'   # Mondays 06:00 UTC — periodic rebuild
   workflow_dispatch:
@@ -26,7 +24,12 @@ env:
   CHART_DIR: helm
 
 jobs:
-  build:
+  # Run the exact same gate as PRs before anything is published.
+  validate:
+    uses: ./.github/workflows/validate.yml
+
+  publish-image:
+    needs: validate
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -37,47 +40,12 @@ jobs:
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
 
-      # 1) Build a single-arch image, loaded into the local docker, for scanning + caps check.
-      - name: Build (amd64) for scanning
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          load: true
-          platforms: linux/amd64
-          tags: ${{ env.IMAGE_NAME }}:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Trivy — Dockerfile misconfig (fail on HIGH/CRITICAL)
-        run: |
-          # Skip helm/ — the chart's hostNetwork/hostPID/caps are intentional for a
-          # debug tool and are validated separately by `helm lint`.
-          docker run --rm -v "$PWD:/work" -w /work aquasec/trivy:latest \
-            config --severity HIGH,CRITICAL --exit-code 1 --skip-dirs helm .
-
-      - name: Trivy — image vulns (fail on fixed HIGH/CRITICAL)
-        run: |
-          docker run --rm \
-            -v /var/run/docker.sock:/var/run/docker.sock \
-            -v "$HOME/.cache/trivy:/root/.cache/" \
-            aquasec/trivy:latest image --scanners vuln \
-            --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 "$IMAGE_NAME:ci"
-
-      - name: Verify tcpdump file caps (non-root capture guard)
-        run: |
-          out=$(docker run --rm "$IMAGE_NAME:ci" sh -c 'getcap "$(command -v tcpdump)"')
-          echo "$out"
-          echo "$out" | grep -q cap_net_raw || { echo "FAIL: tcpdump missing file caps"; exit 1; }
-          echo "OK: tcpdump file caps present"
-
       - name: Lowercase repository owner (ghcr paths must be lowercase)
         id: owner
         run: echo "ghcr=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
 
-      # 2) Push multi-arch to both registries — only outside PRs (fork PRs have no secrets).
       - name: Docker metadata
         id: meta
-        if: github.event_name != 'pull_request'
         uses: docker/metadata-action@v5
         with:
           images: |
@@ -91,14 +59,12 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Log in to Docker Hub
-        if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
           username: ${{ vars.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Log in to GHCR
-        if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -106,7 +72,6 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build & push (linux/amd64, linux/arm64) to Docker Hub + GHCR
-        if: github.event_name != 'pull_request'
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -119,21 +84,16 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # Keep the Docker Hub Overview in sync with README.md (main only).
       - name: Sync README to Docker Hub overview
-        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        if: github.ref == 'refs/heads/main'
         uses: peter-evans/dockerhub-description@v4
         with:
           username: ${{ vars.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
           repository: ${{ vars.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}
 
-  # Package the Helm chart, push it to GHCR (nested charts/ path), then mirror the exact
-  # same artifact to a separate Docker Hub repo (<name>-helm). Runs after the image
-  # publishes, never on PRs.
   publish-chart:
-    needs: build
-    if: github.event_name != 'pull_request'
+    needs: [validate, publish-image]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -146,9 +106,6 @@ jobs:
 
       - name: Set up ORAS
         uses: oras-project/setup-oras@v1
-
-      - name: Lint chart
-        run: helm lint "$CHART_DIR"
 
       - name: Package & push chart (GHCR + Docker Hub)
         env:
@@ -163,8 +120,8 @@ jobs:
           echo "chart version: $ver"
 
           # Registry logins (helm push to GHCR; oras copy GHCR -> Docker Hub).
-          echo "$GHCR_TOKEN"      | helm registry login ghcr.io           -u "$ACTOR"              --password-stdin
-          echo "$GHCR_TOKEN"      | oras login          ghcr.io           -u "$ACTOR"              --password-stdin
+          echo "$GHCR_TOKEN"      | helm registry login ghcr.io              -u "$ACTOR"              --password-stdin
+          echo "$GHCR_TOKEN"      | oras login          ghcr.io              -u "$ACTOR"              --password-stdin
           echo "$DOCKERHUB_TOKEN" | oras login          registry-1.docker.io -u "$DOCKERHUB_USERNAME" --password-stdin
 
           # Package once; push canonical chart to GHCR (leaf = chart name).

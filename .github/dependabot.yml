@@ -1,0 +1,16 @@
+version: 2
+updates:
+  # Keep workflow action versions current (also clears Node-version deprecations).
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # Watch the Dockerfile base image (Wolfi) and propose newer digests.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly

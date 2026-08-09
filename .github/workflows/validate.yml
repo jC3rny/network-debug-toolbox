@@ -1,0 +1,60 @@
+name: validate
+
+# Reusable validation gate — the single source of truth for CI. Called by ci.yml (on PRs)
+# and by release.yml (before publishing). Builds the image, runs the same checks as `make`
+# (Trivy config + image scan, file-caps guard), and lints the Helm chart. No secrets, no push.
+
+on:
+  workflow_call:
+
+env:
+  IMAGE_NAME: network-debug-toolbox
+
+jobs:
+  build-scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build (amd64) for scanning
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          platforms: linux/amd64
+          tags: ${{ env.IMAGE_NAME }}:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Trivy — Dockerfile misconfig (fail on HIGH/CRITICAL)
+        run: |
+          # Skip helm/ — the chart's hostNetwork/hostPID/caps are intentional for a
+          # debug tool and are validated separately by `helm lint`.
+          docker run --rm -v "$PWD:/work" -w /work aquasec/trivy:latest \
+            config --severity HIGH,CRITICAL --exit-code 1 --skip-dirs helm .
+
+      - name: Trivy — image vulns (fail on fixed HIGH/CRITICAL)
+        run: |
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$HOME/.cache/trivy:/root/.cache/" \
+            aquasec/trivy:latest image --scanners vuln \
+            --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 "$IMAGE_NAME:ci"
+
+      - name: Verify tcpdump file caps (non-root capture guard)
+        run: |
+          out=$(docker run --rm "$IMAGE_NAME:ci" sh -c 'getcap "$(command -v tcpdump)"')
+          echo "$out"
+          echo "$out" | grep -q cap_net_raw || { echo "FAIL: tcpdump missing file caps"; exit 1; }
+          echo "OK: tcpdump file caps present"
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      - name: Lint chart
+        run: helm lint helm
