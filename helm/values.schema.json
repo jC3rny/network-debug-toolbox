@@ -5,6 +5,7 @@
   "additionalProperties": false,
   "required": ["image"],
   "properties": {
+    "global": { "type": "object" },
     "image": {
       "type": "object",
       "additionalProperties": false,
