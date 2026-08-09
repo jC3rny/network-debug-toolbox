@@ -1,6 +1,8 @@
 version: 2
 updates:
   # Keep workflow action versions current (also clears Node-version deprecations).
+  # `ci` prefix -> Conventional Commit that release-please logs but does NOT release
+  # (actions don't change the published image).
   - package-ecosystem: github-actions
     directory: /
     schedule:
@@ -8,9 +10,14 @@ updates:
     groups:
       actions:
         patterns: ["*"]
+    commit-message:
+      prefix: ci
 
   # Watch the Dockerfile base image (Wolfi) and propose newer digests.
+  # `fix` prefix -> a base-image bump changes the published image, so it cuts a patch release.
   - package-ecosystem: docker
     directory: /
     schedule:
       interval: weekly
+    commit-message:
+      prefix: fix

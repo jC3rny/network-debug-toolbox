@@ -29,7 +29,7 @@ capabilities.
 ```bash
 # published to both registries — pick either:
 IMG=jc3rny/network-debug-toolbox:latest              # Docker Hub
-IMG=ghcr.io/jc3rny/network-debug-toolbox:latest      # GHCR (no pull rate limits)
+IMG=ghcr.io/jc3rny/library/network-debug-toolbox:latest      # GHCR (no pull rate limits)
 
 # inside a pod (packet capture needs the netadmin profile)
 kubectl debug -it <pod> -n <ns> --image=$IMG --target=<container> --profile=netadmin -- bash
@@ -83,8 +83,8 @@ Published artifacts:
 
 | Artifact | Docker Hub | GHCR |
 |---|---|---|
-| Image | `jc3rny/network-debug-toolbox` | `ghcr.io/jc3rny/network-debug-toolbox` |
-| Chart | `jc3rny/network-debug-toolbox-helm` | `ghcr.io/jc3rny/helm-charts/network-debug-toolbox` |
+| Image | `jc3rny/network-debug-toolbox` | `ghcr.io/jc3rny/library/network-debug-toolbox` |
+| Chart | `jc3rny/network-debug-toolbox-helm` | `ghcr.io/jc3rny/helm/network-debug-toolbox` |
 
 GHCR auth uses the built-in `GITHUB_TOKEN` (no setup). Docker Hub needs these under
 **Settings → Secrets and variables → Actions**:
@@ -92,7 +92,25 @@ GHCR auth uses the built-in `GITHUB_TOKEN` (no setup). Docker Hub needs these un
 | Name | Kind | Purpose |
 |---|---|---|
 | `DOCKERHUB_USERNAME` | **Variable** | Docker Hub account the image is pushed under (not sensitive — kept a variable so it stays readable in logs) |
-| `DOCKERHUB_TOKEN` | **Secret** | Docker Hub access token (Account Settings → Security) |
+| `DOCKERHUB_TOKEN` | **Secret** | Docker Hub access token, **Read & Write, all repositories** |
+| `RELEASE_PLEASE_TOKEN` | **Secret** | PAT for release automation — Contents RW + Pull requests RW |
+
+Images and charts are signed with **cosign** (keyless/OIDC); verify with
+`cosign verify <ref> --certificate-identity-regexp '.*' --certificate-oidc-issuer https://token.actions.githubusercontent.com`.
+
+### Versioned releases (release-please)
+
+Uses **Conventional Commits** (`feat:` → minor, `fix:` → patch). `release-please` keeps a
+release PR that bumps the version + `CHANGELOG.md` + the chart's `version`/`appVersion`;
+it's auto-merged once CI passes, and the resulting `vX.Y.Z` tag triggers the publish above.
+Dependabot base-image bumps land as `fix(...)` so they roll into a patch release
+automatically (action bumps use `ci(...)` — changelog only, no release). Note `:latest`
+already tracks `main`, so patches reach it even before a versioned release is cut.
+
+For full automation to work you must enable **Settings → General → Allow auto-merge** and a
+**required status check** on `main` (use `validate / build-scan`; don't require approvals,
+or the bot PRs can't self-merge). `RELEASE_PLEASE_TOKEN` must be a PAT (not `GITHUB_TOKEN`),
+or the release PR won't trigger CI and the tag won't trigger publishing.
 
 To publish manually instead:
 
@@ -114,7 +132,7 @@ pushes it as an OCI artifact to both registries on `main`/`v*` (use either):
 
 ```bash
 # GHCR
-helm install ndt oci://ghcr.io/jc3rny/helm-charts/network-debug-toolbox \
+helm install ndt oci://ghcr.io/jc3rny/helm/network-debug-toolbox \
   --namespace netdebug --create-namespace
 # Docker Hub
 helm install ndt oci://registry-1.docker.io/jc3rny/network-debug-toolbox-helm \

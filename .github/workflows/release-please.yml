@@ -1,0 +1,40 @@
+name: release-please
+
+# Maintains a "release PR" that bumps the version, updates CHANGELOG.md, and bumps the
+# chart's version/appVersion from Conventional Commits. The release PR is auto-merged once
+# CI passes; merging it cuts a GitHub Release + vX.Y.Z tag, which triggers release.yml to
+# publish the versioned artifacts.
+#
+# IMPORTANT: uses a PAT (secret RELEASE_PLEASE_TOKEN), not GITHUB_TOKEN. PRs and tags made
+# with GITHUB_TOKEN do NOT trigger other workflows, so with it the release PR would never
+# run CI (auto-merge stalls) and the release tag would never trigger release.yml. The PAT
+# needs Contents: read/write and Pull requests: read/write.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: rp
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+
+      - name: Enable auto-merge on the release PR
+        if: ${{ steps.rp.outputs.pr }}
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          PR: ${{ steps.rp.outputs.pr }}
+        run: gh pr merge --auto --squash "$(echo "$PR" | jq -r '.number')"
