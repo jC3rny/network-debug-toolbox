@@ -8,7 +8,8 @@ name: release-please
 # IMPORTANT: uses a PAT (secret RELEASE_PLEASE_TOKEN), not GITHUB_TOKEN. PRs and tags made
 # with GITHUB_TOKEN do NOT trigger other workflows, so with it the release PR would never
 # run CI (auto-merge stalls) and the release tag would never trigger release.yml. The PAT
-# needs Contents: read/write and Pull requests: read/write.
+# needs Contents: read/write and Pull requests: read/write. Until the secret is set, this
+# workflow skips (green no-op) instead of failing.
 
 on:
   push:
@@ -26,15 +27,23 @@ concurrency:
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    env:
+      RP_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
     steps:
-      - uses: googleapis/release-please-action@v4
+      - name: Skip if no PAT configured
+        if: ${{ env.RP_TOKEN == '' }}
+        run: echo "RELEASE_PLEASE_TOKEN not set — skipping release automation. Add the PAT to enable it."
+
+      - name: Release please
         id: rp
+        if: ${{ env.RP_TOKEN != '' }}
+        uses: googleapis/release-please-action@v4
         with:
-          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          token: ${{ env.RP_TOKEN }}
 
       - name: Enable auto-merge on the release PR
-        if: ${{ steps.rp.outputs.pr }}
+        if: ${{ env.RP_TOKEN != '' && steps.rp.outputs.pr }}
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          GH_TOKEN: ${{ env.RP_TOKEN }}
           PR: ${{ steps.rp.outputs.pr }}
         run: gh pr merge --auto --squash "$(echo "$PR" | jq -r '.number')"
